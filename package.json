@@ -1,0 +1,12 @@
+{
+  "name": "yt-shorts-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot to download YouTube Shorts",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.15.0"
+  }
+}
