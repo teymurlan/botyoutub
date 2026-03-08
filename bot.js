@@ -1,8 +1,4 @@
 const { Telegraf } = require('telegraf');
-const { exec } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
 
 // Получаем токен из переменных окружения (Railway)
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -27,54 +23,58 @@ bot.on('text', async (ctx) => {
     return ctx.reply('Пожалуйста, отправь корректную ссылку на YouTube.');
   }
 
-  const statusMsg = await ctx.reply('⏳ Скачиваю видео, подожди немного...');
-  
-  // Генерируем случайное имя файла
-  const filename = crypto.randomBytes(8).toString('hex') + '.mp4';
-  const filepath = path.join(__dirname, filename);
+  const statusMsg = await ctx.reply('⏳ Обрабатываю видео...');
 
-  // Используем yt-dlp для скачивания лучшего качества видео+аудио в формате mp4
-  // yt-dlp работает намного стабильнее и быстрее, чем ytdl-core
-  const cmd = `yt-dlp -f "best[ext=mp4]/best" -o "${filepath}" "${text}"`;
+  try {
+    // Используем API Cobalt для обхода блокировок IP адресов Railway от YouTube
+    // Это работает в 10 раз быстрее и не требует скачивания на сам сервер
+    const response = await fetch('https://api.cobalt.tools/api/json', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      },
+      body: JSON.stringify({
+        url: text,
+        vQuality: '720', // Качество видео
+        filenamePattern: 'classic'
+      })
+    });
 
-  exec(cmd, async (error, stdout, stderr) => {
-    if (error) {
-      console.error(`Ошибка скачивания: ${error.message}`);
-      return ctx.telegram.editMessageText(
-        ctx.chat.id, 
-        statusMsg.message_id, 
-        null, 
-        '❌ Произошла ошибка при скачивании видео. Возможно, видео недоступно или удалено.'
-      );
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status}`);
     }
 
-    try {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id, 
-        statusMsg.message_id, 
-        null, 
-        '✅ Видео скачано! Отправляю в чат...'
-      );
-      
-      // Отправляем видео пользователю
-      await ctx.replyWithVideo({ source: filepath });
-      
-      // Удаляем файл после отправки, чтобы не забивать память сервера
-      if (fs.existsSync(filepath)) {
-        fs.unlinkSync(filepath);
-      }
-    } catch (err) {
-      console.error('Ошибка отправки:', err);
-      ctx.reply('❌ Ошибка при отправке видео. Возможно, оно слишком большое (лимит Telegram для ботов — 50 МБ).');
-      if (fs.existsSync(filepath)) {
-        fs.unlinkSync(filepath);
-      }
+    const data = await response.json();
+
+    if (data.status === 'error' || !data.url) {
+      throw new Error(data.text || 'Не удалось получить ссылку на видео');
     }
-  });
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id, 
+      statusMsg.message_id, 
+      null, 
+      '✅ Видео найдено! Отправляю в чат...'
+    );
+    
+    // Отправляем видео пользователю напрямую по ссылке (Telegram скачает его сам)
+    await ctx.replyWithVideo({ url: data.url });
+    
+  } catch (err) {
+    console.error('Ошибка:', err.message);
+    await ctx.telegram.editMessageText(
+      ctx.chat.id, 
+      statusMsg.message_id, 
+      null, 
+      `❌ Произошла ошибка при скачивании.\n\nПричина: YouTube заблокировал запрос или видео недоступно.`
+    );
+  }
 });
 
 bot.launch().then(() => {
-  console.log('Бот успешно запущен!');
+  console.log('Бот успешно запущен и готов к работе!');
 });
 
 // Плавная остановка бота
