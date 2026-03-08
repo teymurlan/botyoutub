@@ -1,4 +1,8 @@
 const { Telegraf } = require('telegraf');
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 
 // Получаем токен из переменных окружения (Railway)
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -24,29 +28,23 @@ bot.on('text', async (ctx) => {
   }
 
   const statusMsg = await ctx.reply('⏳ Обрабатываю видео...');
+  let filepath = null;
 
   try {
-    // Используем API Cobalt для обхода блокировок IP адресов Railway от YouTube
-    // Это работает в 10 раз быстрее и не требует скачивания на сам сервер
-    const response = await fetch('https://api.cobalt.tools/api/json', {
-      method: 'POST',
+    // 1. Получаем ссылку на скачивание через Cobalt API
+    const { data } = await axios.post('https://api.cobalt.tools/api/json', {
+      url: text,
+      vQuality: '720',
+      filenamePattern: 'classic'
+    }, {
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-      },
-      body: JSON.stringify({
-        url: text,
-        vQuality: '720', // Качество видео
-        filenamePattern: 'classic'
-      })
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Origin': 'https://cobalt.tools',
+        'Referer': 'https://cobalt.tools/'
+      }
     });
-
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.status}`);
-    }
-
-    const data = await response.json();
 
     if (data.status === 'error' || !data.url) {
       throw new Error(data.text || 'Не удалось получить ссылку на видео');
@@ -56,20 +54,59 @@ bot.on('text', async (ctx) => {
       ctx.chat.id, 
       statusMsg.message_id, 
       null, 
-      '✅ Видео найдено! Отправляю в чат...'
+      '⬇️ Скачиваю видео на сервер...'
     );
+
+    // 2. Скачиваем видео во временный файл на сервере Railway
+    // Мы делаем это, так как сервера Telegram часто блокируются при попытке скачать видео по прямой ссылке
+    const filename = crypto.randomBytes(8).toString('hex') + '.mp4';
+    filepath = path.join(__dirname, filename);
     
-    // Отправляем видео пользователю напрямую по ссылке (Telegram скачает его сам)
-    await ctx.replyWithVideo({ url: data.url });
+    const writer = fs.createWriteStream(filepath);
+    const response = await axios({
+      url: data.url,
+      method: 'GET',
+      responseType: 'stream',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Origin': 'https://cobalt.tools',
+        'Referer': 'https://cobalt.tools/'
+      }
+    });
+
+    response.data.pipe(writer);
+
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+    });
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id, 
+      statusMsg.message_id, 
+      null, 
+      '🚀 Отправляю видео в чат...'
+    );
+
+    // 3. Отправляем скачанный файл в Telegram
+    await ctx.replyWithVideo({ source: filepath });
     
+    // Удаляем статусное сообщение после успешной отправки
+    await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id);
+
   } catch (err) {
     console.error('Ошибка:', err.message);
     await ctx.telegram.editMessageText(
       ctx.chat.id, 
       statusMsg.message_id, 
       null, 
-      `❌ Произошла ошибка при скачивании.\n\nПричина: YouTube заблокировал запрос или видео недоступно.`
+      `❌ Произошла ошибка при скачивании.\n\nПричина: ${err.message}`
     );
+  } finally {
+    // 4. Обязательно удаляем временный файл, чтобы не забить память сервера
+    if (filepath && fs.existsSync(filepath)) {
+      fs.unlinkSync(filepath);
+    }
   }
 });
 
